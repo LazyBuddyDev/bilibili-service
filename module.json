@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "id": "bilibili",
+  "name": "B站",
+  "version": "0.1.2",
+  "service_api": 1,
+  "target": "windows-x86_64",
+  "entrypoint": "bin/bilibili-service.exe",
+  "page": {
+    "template": "media_library",
+    "search_method": "search"
+  },
+  "dependencies": []
+}

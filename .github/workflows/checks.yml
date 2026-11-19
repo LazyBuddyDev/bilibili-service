@@ -1,0 +1,11 @@
+name: Checks
+on: [push, pull_request]
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo test --locked
+      - shell: powershell
+        run: ./scripts/package.ps1 -Destination "$pwd/target/packages/check"
