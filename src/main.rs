@@ -23,8 +23,9 @@ struct Task {
     id: u64,
     method: String,
     cancel: Arc<AtomicBool>,
-    worker: Option<JoinHandle<Result<Outcome>>>,
+    worker: Option<JoinHandle<(Result<Outcome>, Value)>>,
     result: Option<Result<Value>>,
+    diagnostic: Value,
 }
 struct Engine {
     server: resource::Server,
@@ -85,13 +86,17 @@ impl Engine {
         self.next += 1;
         let cancel = Arc::new(AtomicBool::new(false));
         let c = cancel.clone();
-        let worker = std::thread::spawn(move || work(c));
+        let worker = std::thread::spawn(move || {
+            let result = work(c);
+            (result, api::take_diagnostic())
+        });
         self.task = Some(Task {
             id: self.next,
             method: method.into(),
             cancel,
             worker: Some(worker),
             result: None,
+            diagnostic: Value::Null,
         });
         Ok(json!({"job":self.next,"status":"pending"}))
     }
@@ -108,12 +113,13 @@ impl Engine {
             if !w.is_finished() {
                 return Ok(json!({"job":id,"status":"pending"}));
             }
-            let result = t
+            let (result, diagnostic) = t
                 .worker
                 .take()
                 .unwrap()
                 .join()
-                .unwrap_or(Err("service_worker_failed"));
+                .unwrap_or((Err("service_worker_failed"), Value::Null));
+            t.diagnostic = diagnostic;
             let result=result.and_then(|out|match out {
     Outcome::Json(v)=>Ok(v),
     Outcome::Media(m,o)=>self.server.open(m,o,id),
@@ -134,7 +140,7 @@ impl Engine {
         }
         match t.result.as_ref().ok_or("job_not_found")? {
             Ok(v) => Ok(json!({"job":id,"status":"complete","result":v})),
-            Err(e) => Ok(json!({"job":id,"status":"failed","error":e})),
+            Err(e) => Ok(json!({"job":id,"status":"failed","error":e,"diagnostic":t.diagnostic})),
         }
     }
     fn call(&mut self, method: &str, args: &Value) -> Result<Value> {
@@ -356,6 +362,47 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_worker_returns_only_bounded_network_diagnostics() {
+        let mut e = Engine::new().unwrap();
+        let j = e
+            .begin("search", |_| {
+                Err(api::error(ureq::Error::ConnectProxyFailed(
+                    "secret proxy URL".into(),
+                )))
+            })
+            .unwrap();
+        while !e
+            .task
+            .as_ref()
+            .unwrap()
+            .worker
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            std::thread::yield_now();
+        }
+        let result = e.status(j["job"].as_u64().unwrap()).unwrap();
+        assert_eq!(result["error"], "source_proxy_failed");
+        assert_eq!(result["diagnostic"], json!({"exception_type":"proxy"}));
+        assert!(!result.to_string().contains("secret"));
+        let j = e
+            .begin("search", |_| Err("invalid_source_response"))
+            .unwrap();
+        while !e
+            .task
+            .as_ref()
+            .unwrap()
+            .worker
+            .as_ref()
+            .unwrap()
+            .is_finished()
+        {
+            std::thread::yield_now();
+        }
+        assert!(e.status(j["job"].as_u64().unwrap()).unwrap()["diagnostic"].is_null());
+    }
     #[test]
     fn cancelled_work_counts_until_finished_and_cannot_commit() {
         let mut e = Engine::new().unwrap();

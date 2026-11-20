@@ -5,6 +5,12 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::Duration,
 };
+thread_local! {
+    static DIAGNOSTIC: std::cell::RefCell<Value> = const { std::cell::RefCell::new(Value::Null) };
+}
+pub fn take_diagnostic() -> Value {
+    DIAGNOSTIC.with(|slot| slot.replace(Value::Null))
+}
 pub type Result<T> = std::result::Result<T, &'static str>;
 pub const UA: &str = "Mozilla/5.0";
 pub const REFERER: &str = "https://www.bilibili.com/";
@@ -25,11 +31,37 @@ pub fn agent() -> ureq::Agent {
         .new_agent()
 }
 pub fn error(e: ureq::Error) -> &'static str {
+    DIAGNOSTIC.with(|slot| {
+        let mut d = slot.borrow_mut();
+        if !d.is_object() {
+            *d = json!({});
+        }
+        let category = match &e {
+            ureq::Error::StatusCode(code) => {
+                d["http_status"] = json!(code);
+                "http"
+            }
+            ureq::Error::Tls(_) | ureq::Error::NativeTls(_) => "tls",
+            ureq::Error::InvalidProxyUrl | ureq::Error::ConnectProxyFailed(_) => "proxy",
+            ureq::Error::HostNotFound => "dns",
+            ureq::Error::ConnectionFailed => "connect",
+            ureq::Error::Timeout(_) => "timeout",
+            ureq::Error::Io(_) => "io",
+            _ => "other",
+        };
+        d["exception_type"] = json!(category);
+    });
     match e {
         ureq::Error::StatusCode(401 | 403) | ureq::Error::TooManyRedirects => {
             "source_access_denied"
         }
+        ureq::Error::StatusCode(412) => "source_verification_required",
         ureq::Error::StatusCode(429) => "source_rate_limited",
+        ureq::Error::StatusCode(_) => "source_http_failed",
+        ureq::Error::Tls(_) | ureq::Error::NativeTls(_) => "source_tls_failed",
+        ureq::Error::InvalidProxyUrl | ureq::Error::ConnectProxyFailed(_) => "source_proxy_failed",
+        ureq::Error::HostNotFound => "source_dns_failed",
+        ureq::Error::ConnectionFailed => "source_connect_failed",
         ureq::Error::Timeout(_) => "source_timeout",
         ureq::Error::BodyExceedsLimit(_) => "source_response_too_large",
         _ => "source_network_failed",
@@ -68,6 +100,17 @@ pub fn get(
     ) {
         return Err("unsupported_method");
     }
+    DIAGNOSTIC.with(|slot| {
+        *slot.borrow_mut() = json!({"stage":match path {
+            "/x/web-interface/nav" => "navigation",
+            "/x/web-interface/wbi/search/type" => "search",
+            "/x/web-interface/wbi/index/top/feed/rcmd" => "recommend",
+            "/x/polymer/web-dynamic/v1/feed/all" => "following",
+            "/x/web-interface/view" => "video_details",
+            "/x/player/wbi/playurl" => "playback_source",
+            _ => "login",
+        }})
+    });
     let mut request = agent()
         .get(format!("{host}{path}"))
         .header("User-Agent", UA)
@@ -470,6 +513,24 @@ pub fn poll(key: &str, cancel: &AtomicBool) -> Result<Login> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn network_errors_are_distinct_and_never_include_private_details() {
+        assert_eq!(
+            error(ureq::Error::Tls("private host detail")),
+            "source_tls_failed"
+        );
+        assert_eq!(
+            error(ureq::Error::ConnectProxyFailed("secret proxy".into())),
+            "source_proxy_failed"
+        );
+        assert_eq!(error(ureq::Error::HostNotFound), "source_dns_failed");
+        assert_eq!(
+            error(ureq::Error::StatusCode(412)),
+            "source_verification_required"
+        );
+        assert_eq!(error(ureq::Error::StatusCode(403)), "source_access_denied");
+        assert_eq!(error(ureq::Error::StatusCode(503)), "source_http_failed");
+    }
     #[test]
     fn course_cards_do_not_break_video_search_and_titles_are_plain_text() {
         let data = json!({"numPages":2,"result":[{"type":"ketang","title":"付费课程"},{"type":"video","bvid":"BV1oJ41137oE","title":"<em>标题</em> &amp; 示例","author":"UP","duration":"1:03"}]});
