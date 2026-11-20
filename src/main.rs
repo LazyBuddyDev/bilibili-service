@@ -158,6 +158,9 @@ impl Engine {
                 Ok(json!({}))
             }
             "search" => {
+                if self.cookie.is_empty() {
+                    return Err("account_required");
+                }
                 let query = api::text(args, "query", 100)?.trim().to_string();
                 let page = args
                     .get("page")
@@ -177,7 +180,7 @@ impl Engine {
             }
             "recommend" | "following" => {
                 let cookie = self.cookie.clone();
-                if method == "following" && cookie.is_empty() {
+                if cookie.is_empty() {
                     return Err("account_required");
                 }
                 let fresh = args.get("fresh").and_then(Value::as_u64).unwrap_or(1);
@@ -363,6 +366,18 @@ fn main() {
 mod tests {
     use super::*;
     #[test]
+    fn content_requires_login_before_spawning_any_network_work() {
+        let mut e = Engine::new().unwrap();
+        for (method, args) in [
+            ("recommend", json!({"fresh":1})),
+            ("search", json!({"query":"test","page":1})),
+            ("following", json!({})),
+        ] {
+            assert_eq!(e.call(method, &args), Err("account_required"));
+            assert!(e.task.is_none());
+        }
+    }
+    #[test]
     fn failed_worker_returns_only_bounded_network_diagnostics() {
         let mut e = Engine::new().unwrap();
         let j = e
@@ -443,6 +458,7 @@ mod tests {
     #[test]
     fn validation_precedes_network() {
         let mut e = Engine::new().unwrap();
+        e.cookie = "test-cookie".into();
         assert!(e.call("search", &json!({"query":"","page":1})).is_err());
         assert!(
             e.call(
