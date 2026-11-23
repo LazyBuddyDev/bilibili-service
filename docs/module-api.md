@@ -4,6 +4,8 @@ Stdin/stdout JSON-lines protocol v1, 64 KiB input limit. Envelope: `{ "version":
 
 ## Methods
 
+`recommend`, `search` and `following` require a restored or confirmed login. Without an in-memory authenticated session they return `account_required` synchronously, before starting a task or making network requests. Logout/expiry clears the session; the host hides previous account content until login is confirmed again.
+
 - `health`: version/capabilities and current media request/byte counters.
 - `search {query,page}`: asynchronous job; returns title/author/duration and BV IDs. Video results only; paid course cards are ignored. HTML highlights become plain text. At most 50 results/page and 1000 pages.
 - `task.status {job}`: pending/complete/failed/cancelled, with result only for the current job. `task.cancel {job}` cancels; cancelled workers still occupy the single network-work slot until finished. Results are committed only when current and uncancelled.
@@ -13,6 +15,10 @@ Stdin/stdout JSON-lines protocol v1, 64 KiB input limit. Envelope: `{ "version":
 - `playback.open {bvid,cid?,origin}`: asynchronous; selected CID is revalidated against the video pages; missing CID selects the first P. Complete multi-P/UGC collection entries accompany the response. Each selected video is independently revalidated for playback permission; incomplete collection counts return no selectable entries. Returns a short-lived local resource capability, session ID, title, BV/CID, actual declared quality and duration. Exactly one complete MP4 is supported; reject previews, incomplete durations, segmented/DASH resources. No comments, danmaku or next-episode prefetch.
 - `playback.suspend/resume/close {session}`: current session only. Suspend stops streaming; resume is explicit and does not itself play. Close destroys the capability.
 - `lifecycle.suspend`: cancel current work, clear QR polling state and suspend media. The browser must pause and detach src. Returning visible does not fetch or autoplay.
+
+## Error diagnostics
+
+Failed asynchronous tasks include a bounded `diagnostic` object: fixed `stage`, fixed network `exception_type` and optional numeric `http_status`. It never contains exception text, request parameters, URLs, cookies or proxy addresses. The host records the failure against the initiating method once. Network failures distinguish TLS, proxy, DNS, connection and HTTP response failures; HTTP 412 requires official verification and is not retried.
 
 ## Network and credential boundary
 
@@ -28,8 +34,4 @@ Credentials are Windows generic credentials under LazyBuddy/bilibili/<scope>; de
 
 Earlier live verification covered QR confirmation/secure save/new-process restore, official recommendation/following pagination, multi-P/UGC directories, selected-CID playback, 1920×1080 browser frames, nonzero PCM, 2× playback and hidden read stop without resume autoplay. These checks do not establish current source availability or native host visual/audio acceptance.
 
-Version 0.1.4 adds mandatory login for recommendation/search/following. Fifteen service unit tests and an anonymous installed-package rejection check passed; no content job is created before login. Host fixture tests cover login/expiry, shared controls, seek/retry and hidden lifecycle. The reported BV1Jjsw6qEpx returned HTTP 412 anonymously at video details; current authenticated playback of that video remains unverified.
-
-Failed asynchronous tasks include a bounded `diagnostic` object: fixed `stage`, fixed network `exception_type` and optional numeric `http_status`. It never contains exception text, request parameters, URLs, cookies or proxy addresses. The host records the failure against the initiating method once. Network failures distinguish TLS, proxy, DNS, connection and HTTP response failures; HTTP 412 requires official verification and is not retried.
-
-`recommend`, `search` and `following` require a restored or confirmed login. Without an in-memory authenticated session they return `account_required` synchronously, before starting a task or making network requests. Logout/expiry clears the session; the host hides previous account content until login is confirmed again.
+For service 0.1.4, fifteen service unit tests and the installed-package check for rejection before login passed. Host fixtures covered login/expiry, shared controls, seek/retry and hidden lifecycle. The original anonymous check for BV1Jjsw6qEpx returned HTTP 412 at video details. The user later confirmed that recommendations, search and playback of the original video worked after login. This acceptance covers the reported case. See the [0.1.4 service release](https://github.com/LazyBuddyDev/bilibili-service/releases/tag/v0.1.4) and the [host 1.0.8 release](https://github.com/LazyBuddyDev/LazyBuddy/releases/tag/v1.0.8).
